@@ -68,6 +68,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     sp_middleware/motor/rm_motor/rm_motor.cpp
     sp_middleware/tools/math_tools/math_tools.cpp
     sp_middleware/tools/pid/pid.cpp
+    sp_middleware/tools/mecanum/mecanum.cpp
     # Add user sources here
 )
 

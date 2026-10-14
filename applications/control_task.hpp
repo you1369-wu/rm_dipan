@@ -1,11 +1,21 @@
 #ifndef CONTROL_TASK_HPP
 #define CONTROL_TASK_HPP
 
-typedef struct
-{
-	float target_angle_set;	 // 绝对角度的目标值，rad
-	float target_speed_set;	 // 绝对速度的目标值，rad/s
-	float given_torque;		 // 电机给定的力矩，Nm
-} GimbalData;
+#include "motor/rm_motor/rm_motor.hpp"
 
-#endif	// CONTROL_TASK_HPP
+struct ChassisMotorData
+{
+  float target_speed_set;  // 轮轴目标角速度，rad/s
+  float given_torque;      // 轮轴给定力矩，N·m
+};
+
+struct ChassisWheel
+{
+  sp::RM_Motor * motor;
+  ChassisMotorData data;
+};
+
+// 顺序：左前、左后、右前、右后
+extern ChassisWheel wheels[4];
+
+#endif

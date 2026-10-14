@@ -1,4 +1,4 @@
-//负责can的收发和电机控制
+// 四台 M3508 麦克纳姆底盘控制：失能、遥控运动和反馈接收。
 #include "control_task.hpp"
 
 #include <cmath>
@@ -11,271 +11,301 @@
 #include "pid_train.hpp"
 #include "remote_task.h"
 #include "tools/math_tools/math_tools.hpp"
+#include "tools/mecanum/mecanum.hpp"
 #include "tools/pid/pid.hpp"
 
 extern sp::CAN can1;
-extern sp::RM_Motor motor_a;
-extern sp::RM_Motor motor_b;
+extern sp::RM_Motor motor_lf;
+extern sp::RM_Motor motor_lr;
+extern sp::RM_Motor motor_rf;
+extern sp::RM_Motor motor_rr;
 
-GimbalData motor_a_data;
-GimbalData motor_b_data;
+ChassisWheel wheels[4] = {{&motor_lf, {}}, {&motor_lr, {}}, {&motor_rf, {}}, {&motor_rr, {}}};
 
-// 复位模式人工标定零点:
-// 当C板与两台电机的R标机械对齐时, 记录当时的IMU yaw和两台电机角度。
-constexpr float kResetImuYawZero = 0.0f;
-constexpr float kResetMotorAAngleZero = 2.86164117f;
-constexpr float kResetMotorBAngleZero = 2.10692263f;
+// 保守调试初值，不是已验收的参数。
+constexpr float kMaxVx = 0.30f;                        // 前后最大目标速度为 0.30 m/s
+constexpr float kMaxVy = 0.30f;                        // 左右最大目标速度为 0.30 m/s
+constexpr float kStickDeadband = 0.05f;                // 摇杆死区，0.05 对应 5% 的最大速度
+constexpr float kDialDeadband = 0.10f;                 // 拨轮死区，0.10 对应 10% 的最大角速度
+constexpr float kMaxWheelSpeed = 12.0f;                // 轮轴 rad/s
+constexpr float kMaxTorque = 0.50f;                    // 轮轴 N·m
+constexpr float kAcceleration = 0.5f;                  // 平移目标加速度 m/s²
+constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(1);  // 控制周期 1 ms
+static_assert(configTICK_RATE_HZ == 1000, "This controller requires 1 kHz RTOS tick");
 
-// 联动模式参考零点:
-// 进入中档时记录三者的当前角度, 以此作为本次联动的参考零点。
-bool link_mode_initialized = false;
-float link_imu_yaw_ref = 0.0f;
-float link_motor_a_ref = 0.0f;
-float link_motor_b_ref = 0.0f;
-float link_motor_b_ratio = 0.5f;
-enum class LinkManualSource { NONE, MOTOR_A, MOTOR_B };
-LinkManualSource link_manual_source = LinkManualSource::NONE;
-uint32_t link_last_board_motion_ms = 0U;
-uint32_t link_last_manual_motion_ms = 0U;
-sp::AngleUnwrapper imu_yaw_unwrapper;
+// 创建麦轮解算对象
+// 半径、前后半间距、左右半间距；方向参数必须按实车校准。
+sp::Mecanum chassis(0.077f, 0.165f, 0.185f, false, false, true, true);
 
-//                           dt     kp    ki    kd    mo   mio   alpha  ang? dynamic?
-sp::PID motor_a_pid_angle(0.001f, 5.0f, 2.5f, 0.0f, 5.0f, 2.5f, 1.0f, true, true);
-sp::PID motor_a_pid_speed(0.001f, 0.035f, 0.0f, 0.0f, 0.3f, 0.2f, 1.0f, false, true);
-sp::PID motor_b_pid_angle(0.001f, 5.0f, 2.5f, 0.0f, 5.0f, 2.5f, 1.0f, true, true);
-sp::PID motor_b_pid_speed(0.001f, 0.035f, 0.0f, 0.0f, 0.3f, 0.2f, 1.0f, false, true);
+//                           dt      kp     ki    kd    mo     mio    alpha  ang?   dynamic?
+sp::PID motor_lf_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lr_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_rf_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_rr_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
 
+// 指针数组引用上述四个实际控制器，不另外创建 PID。
+sp::PID * const wheel_pid[4] = {
+  &motor_lf_pid_speed, &motor_lr_pid_speed, &motor_rf_pid_speed, &motor_rr_pid_speed};
+
+// 目标速度和 PID 输出缓存
+float chassis_vx_set = 0.0f;
+float chassis_vy_set = 0.0f;
+float chassis_wz_set = 0.0f;
+float wheel_pid_p[4] = {};
+float wheel_pid_i[4] = {};
+float wheel_pid_d[4] = {};
+volatile uint32_t disable_can_enqueue_errors = 0U;  //错误计数
+volatile uint32_t disable_can_mailbox_busy = 0U;
+volatile bool chassis_remote_online = false;
+volatile bool chassis_motors_online = false;
+volatile bool chassis_right_switch_mid = false;
+
+// 全局状态
+bool motion_active = false;
+// 失能状态：清掉运动状态并持续发送零命令
 void run_disable_mode()
 {
-  // 失能模式: 所有电机发送零力矩, 保持无力状态
-  motor_a_data.given_torque = 0.0f;
-  motor_b_data.given_torque = 0.0f;
-  motor_a_data.target_speed_set = 0.0f;
-  motor_b_data.target_speed_set = 0.0f;
-  motor_a_pid_angle.clear();
-  motor_a_pid_speed.clear();
-  motor_b_pid_angle.clear();
-  motor_b_pid_speed.clear();
-  motor_a.cmd(0.0f);
-  motor_b.cmd(0.0f);
-  motor_a.write(can1.tx_data);
-  motor_b.write(can1.tx_data);
-  can1.send(motor_a.tx_id);
-}
+  // 从运动转入失能时，取消排队中的运动帧
+  if (motion_active) {
+    const uint32_t mailboxes = CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2;
 
-void reset_link_mode_reference()
-{
-  // 离开中档联动模式后清除参考零点, 下次进入中档时重新以当前位置为零点。
-  link_mode_initialized = false;
-  link_manual_source = LinkManualSource::NONE;
-}
-
-void run_motor_angle_control(
-  float target_angle_a, float target_angle_b, LinkManualSource manual_source = LinkManualSource::NONE)
-{
-  // 两台电机各自运行角度/速度双环PID, 控制量写入同一帧后发送。
-  motor_a_data.target_angle_set = target_angle_a;
-  if (manual_source == LinkManualSource::MOTOR_A) {
-    // 被手拨的电机不施加保持力矩, 由另一台电机跟随它。
-    motor_a_data.target_speed_set = 0.0f;
-    motor_a_data.given_torque = 0.0f;
-  }
-  else {
-    motor_a_pid_angle.calc(target_angle_a, motor_a.angle);
-    motor_a_data.target_speed_set = motor_a_pid_angle.out;
-    motor_a_pid_speed.calc(motor_a_data.target_speed_set, motor_a.speed);
-    motor_a_data.given_torque = motor_a_pid_speed.out;
-  }
-
-  motor_b_data.target_angle_set = target_angle_b;
-  if (manual_source == LinkManualSource::MOTOR_B) {
-    motor_b_data.target_speed_set = 0.0f;
-    motor_b_data.given_torque = 0.0f;
-  }
-  else {
-    motor_b_pid_angle.calc(target_angle_b, motor_b.angle);
-    motor_b_data.target_speed_set = motor_b_pid_angle.out;
-    motor_b_pid_speed.calc(motor_b_data.target_speed_set, motor_b.speed);
-    motor_b_data.given_torque = motor_b_pid_speed.out;
-  }
-
-  motor_a.cmd(motor_a_data.given_torque);
-  motor_b.cmd(motor_b_data.given_torque);
-  motor_a.write(can1.tx_data);
-  motor_b.write(can1.tx_data);
-  can1.send(motor_a.tx_id);
-}
-
-void run_reset_mode(float imu_yaw)
-{
-  // 复位模式: 两台电机的R标分别对齐当前C板R标方向。
-  const float yaw_delta = sp::limit_angle(imu_yaw - kResetImuYawZero);
-  run_motor_angle_control(kResetMotorAAngleZero + yaw_delta, kResetMotorBAngleZero + yaw_delta);
-}
-
-void run_link_mode(float imu_yaw, float yaw_rate, RemoteSwitchMode sw_l, uint32_t now_ms)
-{
-  constexpr float kManualAngleErrorRad = 0.08f;
-  constexpr float kManualSpeedRadS = 0.15f;
-  constexpr float kBoardYawRateRadS = 0.10f;
-  constexpr uint32_t kManualDetectDelayMs = 150U;
-  constexpr uint32_t kManualReleaseMs = 150U;
-
-  float ratio_b = link_motor_b_ratio;
-  switch (sw_l) {
-    case REMOTE_SWITCH_DOWN:
-      ratio_b = 0.5f;
-      break;
-    case REMOTE_SWITCH_MID:
-      ratio_b = -1.0f;
-      break;
-    case REMOTE_SWITCH_UP:
-      ratio_b = 3.0f;
-      break;
-    default:
-      break;
-  }
-
-  // 首次进入联动模式时, 以当前姿态和两台电机位置作为参考点。
-  if (!link_mode_initialized) {
-    link_imu_yaw_ref = imu_yaw;
-    link_motor_a_ref = motor_a.angle;
-    link_motor_b_ref = motor_b.angle;
-    link_motor_b_ratio = ratio_b;
-    link_manual_source = LinkManualSource::NONE;
-    link_last_board_motion_ms = now_ms;
-    link_last_manual_motion_ms = now_ms;
-    link_mode_initialized = true;
-  }
-  else if (ratio_b != link_motor_b_ratio) {
-    // 换档时沿用旧比例计算当前目标, 再以此为新参考点, 防止目标角度跳变。
-    const float yaw_delta = imu_yaw - link_imu_yaw_ref;
-    link_motor_a_ref += yaw_delta;
-    link_motor_b_ref += link_motor_b_ratio * yaw_delta;
-    link_imu_yaw_ref = imu_yaw;
-    link_motor_b_ratio = ratio_b;
-    // 手拨中换档先结束本次输入, 避免用新比例解释旧比例下的位移。
-    link_manual_source = LinkManualSource::NONE;
-    link_last_board_motion_ms = now_ms;
-  }
-
-  if (std::fabs(yaw_rate) > kBoardYawRateRadS) link_last_board_motion_ms = now_ms;
-
-  float yaw_delta = imu_yaw - link_imu_yaw_ref;
-  const float target_a = link_motor_a_ref + yaw_delta;
-  const float target_b = link_motor_b_ref + ratio_b * yaw_delta;
-  const float error_a = sp::limit_angle(motor_a.angle - target_a);
-  const float error_b = sp::limit_angle(motor_b.angle - target_b);
-
-  // C板静止后, 只有电机持续朝远离目标的方向运动, 才认定它被手动转动。
-  if (link_manual_source == LinkManualSource::NONE &&
-      now_ms - link_last_board_motion_ms >= kManualDetectDelayMs) {
-    const bool manual_a = std::fabs(error_a) > kManualAngleErrorRad &&
-                          std::fabs(motor_a.speed) > kManualSpeedRadS && error_a * motor_a.speed > 0.0f;
-    const bool manual_b = std::fabs(error_b) > kManualAngleErrorRad &&
-                          std::fabs(motor_b.speed) > kManualSpeedRadS && error_b * motor_b.speed > 0.0f;
-
-    if (manual_a && (!manual_b || std::fabs(error_a) >= std::fabs(error_b / ratio_b))) {
-      link_manual_source = LinkManualSource::MOTOR_A;
-      motor_a_pid_angle.clear();
-      motor_a_pid_speed.clear();
+    if (HAL_CAN_AbortTxRequest(&hcan1, mailboxes) != HAL_OK) {
+      ++disable_can_enqueue_errors;
     }
-    else if (manual_b) {
-      link_manual_source = LinkManualSource::MOTOR_B;
-      motor_b_pid_angle.clear();
-      motor_b_pid_speed.clear();
-    }
-    if (link_manual_source != LinkManualSource::NONE) link_last_manual_motion_ms = now_ms;
+
+    motion_active = false;
   }
 
-  if (link_manual_source != LinkManualSource::NONE) {
-    // 改变虚拟yaw参考零点, 不改变IMU的实际yaw; B作为输入时按当前比例换算成A的位移。
-    const bool input_a = link_manual_source == LinkManualSource::MOTOR_A;
-    const float manual_delta = input_a ? error_a : error_b / ratio_b;
-    const float input_speed = input_a ? motor_a.speed : motor_b.speed;
-    link_imu_yaw_ref -= manual_delta;
+  // 清车体目标速度
+  chassis_vx_set = 0.0f;
+  chassis_vy_set = 0.0f;
+  chassis_wz_set = 0.0f;
 
-    if (std::fabs(input_speed) > kManualSpeedRadS) link_last_manual_motion_ms = now_ms;
-    if (now_ms - link_last_manual_motion_ms >= kManualReleaseMs) {
-      link_manual_source = LinkManualSource::NONE;
-      link_last_board_motion_ms = now_ms;
-    }
+  // 清四轮控制状态、PID 和电机内部命令
+  for (unsigned i = 0; i < 4U; ++i) {
+    wheels[i].data = {};
+    wheel_pid[i]->clear();
+    wheels[i].motor->cmd(0.0f);
+
+    wheel_pid_p[i] = 0.0f;
+    wheel_pid_i[i] = 0.0f;
+    wheel_pid_d[i] = 0.0f;
   }
 
-  yaw_delta = imu_yaw - link_imu_yaw_ref;
-  run_motor_angle_control(
-    link_motor_a_ref + yaw_delta, link_motor_b_ref + ratio_b * yaw_delta, link_manual_source);
+  // C620：ID1—4 对应 0x200，ID5—8 对应 0x1FF
+  constexpr uint16_t groups[] = {0x200, 0x1FF};
+  static unsigned next_group = 0U;
+
+  for (unsigned attempt = 0; attempt < 2U; ++attempt) {
+    // 整帧清零，无需逐台 write()
+    for (auto & byte : can1.tx_data) {
+      byte = 0U;
+    }
+
+    // 邮箱满时，下周期继续尝试当前组
+    if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0U) {
+      ++disable_can_mailbox_busy;
+      break;
+    }
+
+    // 原中间件 send() 返回 void，不接收返回值
+    can1.send(groups[next_group]);
+
+    next_group = (next_group + 1U) % 2U;
+  }
 }
 
+// 控制任务
 extern "C" void control_task(void const * argument)
 {
   (void)argument;
-
-  osDelay(100);
-
-  // control_task统一负责CAN启动和电机命令发送, 避免多个任务抢控制权
   can1.config();
   can1.start();
-  osDelay(100);
+  run_disable_mode();
 
-  // 初始化
-  motor_a_data.target_angle_set = motor_a.angle;
-  motor_b_data.target_angle_set = motor_b.angle;
+  bool armed = false;                          // 上电或故障后，必须先经过有效下档。
+  TickType_t last_wake = xTaskGetTickCount();  // 记录固定周期调度的基准时间
+  uint32_t last_cycle_ms = osKernelSysTick();  // 记录上次周期的系统时钟，单位 ms
 
   while (true) {
-    RemoteTaskData remote_data = {};
-    const bool remote_ready = remote_task_get_data(&remote_data);
-    ImuTaskData imu_data = {};
-    const bool imu_ready = imu_task_get_data(&imu_data);
-    const float imu_yaw = imu_ready ? imu_yaw_unwrapper.update(imu_data.euler.yaw_rad) : 0.0f;
     const uint32_t now_ms = osKernelSysTick();
-    const bool motors_ready = motor_a.is_alive(now_ms) && motor_b.is_alive(now_ms);
+    const uint32_t elapsed_ms = now_ms - last_cycle_ms;
+    last_cycle_ms = now_ms;
+    RemoteTaskData remote_data = {};
+    float feedback[4] = {};  // 四轮实际速度
+    bool motors_ready = true;
+    bool feedback_finite = true;
 
-    // 右拨杆下档、遥控器未连接或遥控器失联时, 进入失能模式
-    if ((!remote_ready) || (!remote_data.is_alive) || (remote_data.sw_r == REMOTE_SWITCH_DOWN)) {
-      reset_link_mode_reference();
+    // 与 UART/CAN 接收中断建立一致快照。
+    taskENTER_CRITICAL();
+    const bool remote_ready =
+      remote_task_get_data(&remote_data);  // 读取遥控器快照，并取得是否可用的结果
+    for (unsigned i = 0; i < 4U; ++i) {
+      feedback[i] = wheels[i].motor->speed;  // 保存当前轮子的实际轮轴角速度，单位 rad/s
+      if (!wheels[i].motor->is_alive(now_ms)) motors_ready = false;
+      if (!std::isfinite(feedback[i])) feedback_finite = false;
+    }
+    taskEXIT_CRITICAL();
+
+    // 检查遥控器输入是否有效，摇杆和拨轮必须是有限数且在 [-1, 1] 范围内
+    const bool input_valid =
+      std::isfinite(remote_data.ch_lv) && std::isfinite(remote_data.ch_lh) &&
+      std::isfinite(remote_data.ch_lu) && std::fabs(remote_data.ch_lv) <= 1.0f &&
+      std::fabs(remote_data.ch_lh) <= 1.0f && std::fabs(remote_data.ch_lu) <= 1.0f;
+    chassis_remote_online = remote_ready && remote_data.is_alive;
+    chassis_motors_online = motors_ready && feedback_finite;
+    chassis_right_switch_mid = chassis_remote_online && remote_data.sw_r == REMOTE_SWITCH_MID;
+
+    if (!chassis_remote_online || !input_valid || !chassis_motors_online || elapsed_ms > 5U) {
+      armed = false;
       run_disable_mode();
     }
-    else if (remote_data.sw_r == REMOTE_SWITCH_MID) {
-      if (imu_ready && motors_ready) {
-        run_link_mode(imu_yaw, imu_data.gyro_rad_s.z, remote_data.sw_l, now_ms);
-      }
-      else {
-        // 姿态或任一电机反馈缺失时, 不运行角度闭环。
-        reset_link_mode_reference();
-        run_disable_mode();
-      }
+    else if (remote_data.sw_r == REMOTE_SWITCH_DOWN) {
+      armed = true;  // 不代表立即运动，只表示下一次切到中档可以进入运动控制
+      run_disable_mode();
     }
-    else if (remote_data.sw_r == REMOTE_SWITCH_UP) {
-      reset_link_mode_reference();
-      if (imu_ready && motors_ready) {
-        run_reset_mode(imu_yaw);
-      }
-      else {
-        // 姿态或任一电机反馈缺失时, 不运行角度闭环。
-        run_disable_mode();
-      }
+    else if (remote_data.sw_r != REMOTE_SWITCH_MID || !armed) {
+      armed = false;
+      run_disable_mode();
     }
     else {
-      // 未知拨杆状态, 先发送零力矩保护电机
-      run_disable_mode();
-    }
+      // 摇杆死区后重新缩放。x 向前，y 向左。
+      const float lv = remote_data.ch_lv;
+      const float lh = remote_data.ch_lh;
+      const float vx_target =
+        std::fabs(lv) <= kStickDeadband
+          ? 0.0f
+          : sp::sgn(lv) * (std::fabs(lv) - kStickDeadband) / (1.0f - kStickDeadband) * kMaxVx;
+      const float vy_target =
+        std::fabs(lh) <= kStickDeadband
+          ? 0.0f
+          : -sp::sgn(lh) * (std::fabs(lh) - kStickDeadband) / (1.0f - kStickDeadband) * kMaxVy;
+      const float dt = elapsed_ms > 0U ? elapsed_ms * 0.001f : 0.001f;
+      const float max_step = kAcceleration * dt;
+      chassis_vx_set += sp::limit_max(vx_target - chassis_vx_set, max_step);
+      chassis_vy_set += sp::limit_max(vy_target - chassis_vy_set, max_step);
 
-    osDelay(1);
+      // 拨轮死区外定速旋转：正=逆时针，负=顺时针。
+      // 拨轮正负与实车方向须调试确认。
+      chassis_wz_set = std::fabs(remote_data.ch_lu) <= kDialDeadband
+                         ? 0.0f
+                         : static_cast<float>(sp::sgn(remote_data.ch_lu));
+
+      // 麦轮解算和同比限速
+      chassis.calc(
+        chassis_vx_set, chassis_vy_set, chassis_wz_set);  // 车体目标速度转换成四轮目标角速度
+      float target[4] = {
+        chassis.speed_lf, chassis.speed_lr, chassis.speed_rf,
+        chassis.speed_rr};  // 保存解算结果，单位 rad/s
+      float peak = 0.0f;    // 查找四轮目标速度的最大绝对值
+      for (float speed : target) {
+        if (std::fabs(speed) > peak) peak = std::fabs(speed);
+      }
+      const float scale =
+        peak > kMaxWheelSpeed ? kMaxWheelSpeed / peak : 1.0f;  // 超上限时计算缩放比例，否则比例为 1
+      for (unsigned i = 0; i < 4U; ++i) {
+        wheels[i].data.target_speed_set = target[i] * scale;
+        wheel_pid[i]->calc(wheels[i].data.target_speed_set, feedback[i]);
+        wheels[i].data.given_torque = sp::limit_max(wheel_pid[i]->out, kMaxTorque);
+        wheel_pid_p[i] = wheel_pid[i]->data.pout;
+        wheel_pid_i[i] = wheel_pid[i]->data.iout;
+        wheel_pid_d[i] = wheel_pid[i]->data.dout;
+      }
+
+      // 发送前重新读取安全状态；禁止接收中断在检查和入队间更新。
+      bool send_ok = true;
+      taskENTER_CRITICAL();
+      RemoteTaskData latest = {};
+      const uint32_t send_ms = osKernelSysTick();
+      send_ok =
+        remote_task_get_data(&latest) && latest.is_alive && latest.sw_r == REMOTE_SWITCH_MID;
+      for (auto & wheel : wheels) {
+        if (!wheel.motor->is_alive(send_ms)) send_ok = false;
+      }
+      if (send_ok) {
+        motion_active = true;
+        for (unsigned i = 0; i < 4U; ++i) {
+          wheels[i].motor->cmd(wheels[i].data.given_torque);
+        }
+        // 按实际 tx_id 分组，每组只发一次。
+        // 按 tx_id 分组，同一组只发送一次
+        for (unsigned i = 0; i < 4U && send_ok; ++i) {
+          const uint16_t group = wheels[i].motor->tx_id;
+
+          bool already_sent = false;
+
+          for (unsigned j = 0; j < i; ++j) {
+            if (wheels[j].motor->tx_id == group) {
+              already_sent = true;
+            }
+          }
+
+          if (already_sent) {
+            continue;
+          }
+
+          // 清空发送缓冲区
+          for (auto & byte : can1.tx_data) {
+            byte = 0U;
+          }
+
+          // 写入当前组的电机命令
+          for (auto & wheel : wheels) {
+            if (wheel.motor->tx_id == group) {
+              wheel.motor->write(can1.tx_data);
+            }
+          }
+
+          // 邮箱满，退出并由后续代码进入失能
+          if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0U) {
+            ++disable_can_mailbox_busy;
+            send_ok = false;
+            break;
+          }
+
+          // 原 send() 返回 void，不能赋值给 status
+          can1.send(group);
+        }
+      }
+      taskEXIT_CRITICAL();
+      if (!send_ok) {
+        armed = false;
+        run_disable_mode();
+      }
+    }
+    vTaskDelayUntil(&last_wake, kPeriodTicks);
   }
 }
-
+// CAN 接收回调：更新四轮反馈
 extern "C" void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef * hcan)
 {
-  auto stamp_ms = osKernelSysTick();
+  if (hcan != &hcan1) {
+    return;
+  }
 
-  while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0) {
-    if (hcan == &hcan1) {
-      can1.recv();
+  while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0U) {
+    CAN_RxHeaderTypeDef header = {};
+    uint8_t data[8] = {};
 
-      // 在CAN接收中断中更新电机反馈, control_task使用最新反馈计算PID
-      if (can1.rx_id == motor_a.rx_id) motor_a.read(can1.rx_data, stamp_ms);
-      if (can1.rx_id == motor_b.rx_id) motor_b.read(can1.rx_data, stamp_ms);
+    // 直接读取一帧，取得帧头和数据
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, data) != HAL_OK) {
+      break;
+    }
+
+    // 电机反馈必须是标准帧、数据帧、8 字节
+    if (header.IDE != CAN_ID_STD || header.RTR != CAN_RTR_DATA || header.DLC != 8U) {
+      continue;
+    }
+
+    const uint32_t stamp_ms = osKernelSysTick();
+
+    // 按反馈 ID 更新对应电机
+    for (auto & wheel : wheels) {
+      if (header.StdId == wheel.motor->rx_id) {
+        wheel.motor->read(
+          data,
+          stamp_ms);  // 调用中间件解析反馈，更新：轮轴角度、轮轴角速度、电流换算的估算转矩、温度、最近反馈时间
+      }
     }
   }
 }

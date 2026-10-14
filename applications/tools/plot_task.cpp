@@ -4,25 +4,35 @@
 #include "motor/rm_motor/rm_motor.hpp"
 #include "tools/math_tools/math_tools.hpp"
 
-extern sp::RM_Motor motor_a;
-extern GimbalData motor_a_data;
+extern float wheel_pid_p[4];
+extern float wheel_pid_i[4];
+extern float wheel_pid_d[4];
 
 sp::Plotter plotter(&huart1, false);
 
-// clang-format off
 extern "C" void plot_task(void const * argument)
 {
-	(void)argument;
+  (void)argument;
 
-	while (1) {
-		// A电机角度环调试: 目标角度、实际角度、目标速度、给定力矩
-		plotter.plot(
-			motor_a_data.target_angle_set,
-			sp::limit_angle(motor_a.angle),
-			motor_a_data.target_speed_set,
-			motor_a_data.given_torque);
+  while (true) {
+    float set, feedback, torque, p, i, d;
 
-		osDelay(5);
-	}
+    // 复制左前轮数据
+    taskENTER_CRITICAL();
+
+    set = wheels[0].data.target_speed_set;
+    feedback = wheels[0].motor->speed;
+    torque = wheels[0].data.given_torque;
+
+    p = wheel_pid_p[0];
+    i = wheel_pid_i[0];
+    d = wheel_pid_d[0];
+
+    taskEXIT_CRITICAL();
+
+    // 顺序：目标轮速、实际轮速、给定力矩、P、I、D
+    plotter.plot(set, feedback, torque, p, i, d);
+
+    osDelay(10);
+  }
 }
-// clang-format on
