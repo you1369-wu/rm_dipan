@@ -50,6 +50,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     applications/imu_task.cpp
     applications/usart_task.cpp
     applications/remote_task.cpp
+    applications/referee.cpp
+    applications/usart_callbacks.cpp
     applications/can_task.cpp
     applications/control_task.cpp
     applications/tools/plot_task.cpp
@@ -69,6 +71,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     sp_middleware/tools/math_tools/math_tools.cpp
     sp_middleware/tools/pid/pid.cpp
     sp_middleware/tools/mecanum/mecanum.cpp
+    sp_middleware/referee/pm02/pm02.cpp
+    sp_middleware/tools/crc/crc.cpp
     # Add user sources here
 )
 
