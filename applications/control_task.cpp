@@ -30,6 +30,7 @@ volatile bool chassis_remote_online = false;
 volatile bool chassis_motors_online = false;
 volatile bool chassis_right_switch_mid = false;
 volatile float chassis_predicted_power_w = 0.0f;
+volatile float chassis_real_power_w = 0.0f;
 volatile float chassis_power_limit_w = 0.0f;
 volatile float chassis_power_scale = 1.0f;
 
@@ -119,7 +120,7 @@ bool run_wheel_speed_control(const float target[4])
     kPowerK = 0.0f;
   }
   else if (chassis_predicted_power_w > power_limit_w) {
-    // P(K) - P_limit = a*K^2 + b*K + c，K 等比例缩小四轮期望电流。
+    // P(K) - P_limit = a*K^2 + b*K + c，K 是等比例缩小四轮期望电流系数。
     float a = 0.0f;
     float b = 0.0f;
     float c = kPowerK3 - power_limit_w;
@@ -302,6 +303,7 @@ extern "C" void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef * hcan)
   while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0U) {
     CAN_RxHeaderTypeDef header = {};
     uint8_t data[8] = {};
+
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, data) != HAL_OK) {
       break;
     }
@@ -311,6 +313,16 @@ extern "C" void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef * hcan)
     }
 
     const uint32_t stamp_ms = osKernelSysTick();
+
+    //分流功率计反馈帧
+    if (header.StdId == 0x301U) {
+      // 功率计反馈为大端、单位 0.01 W。
+      const uint16_t power_x100 = (static_cast<uint16_t>(data[4]) << 8) | data[5];
+      chassis_real_power_w = power_x100 / 100.0f;
+      continue;
+    }
+
+    //根据 ID 分流 CAN 数据到对应电机
     for (auto & wheel : wheels) {
       if (header.StdId == wheel.motor->rx_id) {
         wheel.motor->read(data, stamp_ms);
