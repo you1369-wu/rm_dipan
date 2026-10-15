@@ -53,10 +53,11 @@ sp::Mecanum chassis(0.077f, 0.165f, 0.185f, false, false, true, true);
 
 //                           dt      kp     ki    kd    mo     mio    alpha  ang?   dynamic?
 //需要对mo，mio进行限幅
-sp::PID motor_lf_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_lr_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_rf_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_rr_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lr_pid_speed(
+  0.001f, 100.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);  //can id 为1
+sp::PID motor_rf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_rr_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
 
 sp::PID * const wheel_pid[4] = {
   &motor_lf_pid_speed, &motor_lr_pid_speed, &motor_rf_pid_speed, &motor_rr_pid_speed};
@@ -231,7 +232,7 @@ extern "C" void control_task(void const * argument)
       std::isfinite(remote_data.ch_lu) && std::fabs(remote_data.ch_lv) <= 1.0f &&
       std::fabs(remote_data.ch_lh) <= 1.0f && std::fabs(remote_data.ch_lu) <= 1.0f;
     const bool remote_online = remote_ready && remote_data.is_alive;
-    const bool right_switch_mid = remote_data.sw_r == REMOTE_SWITCH_MID;
+    const bool right_switch_mid = remote_data.sw_r == REMOTE_SWITCH_MID;  //检查遥控器是否在中档
     chassis_remote_online = remote_online;
     chassis_right_switch_mid = remote_online && right_switch_mid;
 
@@ -243,7 +244,14 @@ extern "C" void control_task(void const * argument)
     }
     else {
       //进入运动模式
-      // 遥控器左摇杆映射到速度（摇杆死区后重新缩放。x 向前，y 向左。）
+      //开环测试
+      // for (auto & byte : can1.tx_data) byte = 0U;
+      // for (unsigned i = 0; i < 4U; ++i) {
+      //   wheels[i].motor->cmd(i == 3U ? 0.5f : 0.0f);
+      //   wheels[i].motor->write(can1.tx_data);
+      // }
+      // can1.send(motor_lf.tx_id);
+      //遥控器左摇杆映射到速度（摇杆死区后重新缩放。x 向前，y 向左。）
       const float lv = remote_data.ch_lv;
       const float lh = remote_data.ch_lh;
       const float vx_target =
@@ -265,9 +273,7 @@ extern "C" void control_task(void const * argument)
                          : static_cast<float>(sp::sgn(remote_data.ch_lu));
 
       chassis.calc(chassis_vx_set, chassis_vy_set, chassis_wz_set);  //麦轮运动学解算
-      float target[4] = {
-        chassis.speed_lf, chassis.speed_lr, chassis.speed_rf,
-        chassis.speed_rr};  //开环测试：float target[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+      float target[4] = {chassis.speed_lf, chassis.speed_lr, chassis.speed_rf, chassis.speed_rr};
       float peak = 0.0f;
       for (float speed : target) {
         if (std::fabs(speed) > peak) peak = std::fabs(speed);
