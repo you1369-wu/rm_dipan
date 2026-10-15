@@ -4,9 +4,10 @@
 #include "motor/rm_motor/rm_motor.hpp"
 
 sp::CAN can1(&hcan1);
-sp::RM_Motor motor_a(1, sp::RM_Motors::GM6020);  // A电机, CAN ID 1
-sp::RM_Motor motor_b(2, sp::RM_Motors::GM6020);  // B电机, CAN ID 2
-
+sp::RM_Motor motor_lf(4, sp::RM_Motors::M3508, 14.9f);  // 左前
+sp::RM_Motor motor_lr(1, sp::RM_Motors::M3508, 14.9f);  // 左后
+sp::RM_Motor motor_rf(3, sp::RM_Motors::M3508, 14.9f);  // 右前
+sp::RM_Motor motor_rr(2, sp::RM_Motors::M3508, 14.9f);  // 右后
 extern "C" void can_task(void const * argument)
 {
   (void)argument;
