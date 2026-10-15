@@ -50,7 +50,7 @@
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId imutaskHandle;
-osThreadId plotTaskHandle;
+osThreadId usartTaskHandle;
 osThreadId remoteTaskHandle;
 osThreadId ledtaskHandle;
 osThreadId buzzerTaskHandle;
@@ -62,7 +62,7 @@ osThreadId controlTaskHandle;
 
 void StartDefaultTask(void const * argument);
 extern void imu_task(void const * argument);
-extern void plot_task(void const * argument);
+extern void usart_task(void const * argument);
 extern void remote_task(void const * argument);
 extern void led_task(void const * argument);
 extern void buzzer_task(void const * argument);
@@ -121,9 +121,9 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(imutask, imu_task, osPriorityHigh, 0, 512);
   imutaskHandle = osThreadCreate(osThread(imutask), NULL);
 
-  /* definition and creation of plotTask */
-  osThreadDef(plotTask, plot_task, osPriorityLow, 0, 512);
-  plotTaskHandle = osThreadCreate(osThread(plotTask), NULL);
+  /* definition and creation of usartTask */
+  osThreadDef(usartTask, usart_task, osPriorityLow, 0, 512);
+  usartTaskHandle = osThreadCreate(osThread(usartTask), NULL);
 
   /* definition and creation of remoteTask */
   osThreadDef(remoteTask, remote_task, osPriorityNormal, 0, 512);

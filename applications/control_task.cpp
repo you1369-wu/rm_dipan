@@ -28,6 +28,9 @@ float wheel_pid_d[4] = {};
 volatile bool chassis_remote_online = false;
 volatile bool chassis_motors_online = false;
 volatile bool chassis_right_switch_mid = false;
+volatile bool lr_step_recording = false;
+volatile uint32_t lr_step_start_ms = 0;
+volatile int16_t lr_step_current_raw = 0;
 
 namespace
 {
@@ -38,6 +41,10 @@ constexpr float kDialDeadband = 0.10f;                 // 拨轮死区
 constexpr float kMaxWheelSpeed = 12.0f;                // 每个轮子目标角速度上限 rad/s
 constexpr float kAcceleration = 0.5f;                  // 平移目标加速度 m/s^2
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(1);  // 控制周期 1 ms
+constexpr bool kLrCurrentStepTest = true;
+constexpr uint32_t kStepAtMs = 200;
+constexpr uint32_t kStepEndMs = 1200;
+constexpr float kStepTorque = 0.4f;
 static_assert(configTICK_RATE_HZ == 1000, "This controller requires 1 kHz RTOS tick");
 
 // 轮半径、前后半间距、左右半间距；右侧轮的转向按当前安装方向取反。
@@ -45,11 +52,10 @@ sp::Mecanum chassis(0.077f, 0.165f, 0.185f, false, false, true, true);
 
 //                           dt      kp     ki    kd    mo     mio    alpha  ang?   dynamic?
 //需要对mo，mio进行限幅
-sp::PID motor_lf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_lr_pid_speed(
-  0.001f, 100.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);  //can id 为1
-sp::PID motor_rf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_rr_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lf_pid_speed(0.001f, 60.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lr_pid_speed(0.001f, 55.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_rf_pid_speed(0.001f, 60.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_rr_pid_speed(0.001f, 60.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
 
 sp::PID * const wheel_pid[4] = {
   &motor_lf_pid_speed, &motor_lr_pid_speed, &motor_rf_pid_speed, &motor_rr_pid_speed};
@@ -112,6 +118,8 @@ bool run_wheel_speed_control(const float target[4])
 
 void run_disable_mode()
 {
+  lr_step_recording = false;
+  lr_step_current_raw = 0;
   chassis_motors_online = false;
   chassis_vx_set = 0.0f;
   chassis_vy_set = 0.0f;
@@ -146,6 +154,9 @@ extern "C" void control_task(void const * argument)
 
   TickType_t last_wake = xTaskGetTickCount();
   uint32_t last_cycle_ms = osKernelSysTick();
+  bool step_armed = true;
+  bool step_running = false;
+  uint32_t step_start_ms = 0;
 
   while (true) {
     const uint32_t now_ms = osKernelSysTick();
@@ -170,7 +181,40 @@ extern "C" void control_task(void const * argument)
     const bool motion_allowed =
       remote_online && right_switch_mid && input_valid && elapsed_ms <= 5U;
     if (!motion_allowed) {
+      step_running = false;
+      if (remote_online && !right_switch_mid) step_armed = true;
       run_disable_mode();
+    }
+    else if (kLrCurrentStepTest) {
+      taskENTER_CRITICAL();
+      const bool lr_ready = motor_lr.is_alive(now_ms) && std::isfinite(motor_lr.speed);
+      taskEXIT_CRITICAL();
+
+      if (step_armed && lr_ready) {
+        step_armed = false;
+        step_running = true;
+        step_start_ms = now_ms;
+        lr_step_start_ms = now_ms;
+      }
+
+      const uint32_t step_elapsed_ms = now_ms - step_start_ms;
+      if (!step_running || !lr_ready || step_elapsed_ms >= kStepEndMs) {
+        step_running = false;
+        run_disable_mode();
+      }
+      else {
+        // ID 1 is LR: the first two bytes of 0x200 carry its signed current command.
+        const float lr_torque = step_elapsed_ms >= kStepAtMs ? kStepTorque : 0.0f;
+        for (auto & byte : can1.tx_data) byte = 0U;
+        for (unsigned i = 0; i < 4U; ++i) {
+          wheels[i].motor->cmd(i == 1U ? lr_torque : 0.0f);
+          wheels[i].motor->write(can1.tx_data);
+        }
+        lr_step_current_raw = static_cast<int16_t>(
+          (static_cast<uint16_t>(can1.tx_data[0]) << 8) | can1.tx_data[1]);
+        can1.send(motor_lf.tx_id);
+        lr_step_recording = true;
+      }
     }
     else {
       //进入运动模式

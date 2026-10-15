@@ -52,7 +52,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     applications/remote_task.cpp
     applications/can_task.cpp
     applications/control_task.cpp
-    applications/tools/plot_task.cpp
     applications/pid_train.cpp
     applications/led_task.cpp
     applications/power_on_melody.cpp
@@ -61,7 +60,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     sp_middleware/io/bmi088/bmi088.cpp
     sp_middleware/io/dbus/dbus.cpp
     sp_middleware/io/can/can.cpp
-    sp_middleware/io/plotter/plotter.cpp
     sp_middleware/io/led/led.cpp
     sp_middleware/io/buzzer/buzzer.cpp
     sp_middleware/tools/mahony/mahony.cpp

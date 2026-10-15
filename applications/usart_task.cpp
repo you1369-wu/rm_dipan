@@ -1,112 +1,59 @@
-// 用 USART1 打印 IMU 数据
 #include "usart_task.h"
 
 #include "cmsis_os.h"
-#include "imu_task.h"
+#include "motor/rm_motor/rm_motor.hpp"
+#include "tools/math_tools/math_tools.hpp"
 #include "usart.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
-namespace
-{
-constexpr uint32_t kPrintPeriodMs = 20U;
-constexpr uint32_t kUartTimeoutMs = 20U;
-constexpr long kFixedPointScale = 1000L;
-
-char tx_buffer[192];
-
-long float_to_milli(float value)
-{
-  const float scaled = value * static_cast<float>(kFixedPointScale);
-  return static_cast<long>((scaled >= 0.0F) ? (scaled + 0.5F) : (scaled - 0.5F));
-}
-
-std::size_t append_text(char * buffer, std::size_t size, std::size_t offset, const char * text)
-{
-  const int written = std::snprintf(buffer + offset, size - offset, "%s", text);
-  if (written <= 0) {
-    return offset;
-  }
-
-  const std::size_t remaining = size - offset;
-  if (static_cast<std::size_t>(written) >= remaining) {
-    return size - 1U;
-  }
-
-  return offset + static_cast<std::size_t>(written);
-}
-
-std::size_t append_fixed(char * buffer, std::size_t size, std::size_t offset, float value)
-{
-  long scaled = float_to_milli(value);
-  const char * sign = "";
-  if (scaled < 0L) {
-    sign = "-";
-    scaled = -scaled;
-  }
-
-  const int written = std::snprintf(
-    buffer + offset, size - offset, "%s%ld.%03ld", sign, scaled / kFixedPointScale,
-    scaled % kFixedPointScale);
-  if (written <= 0) {
-    return offset;
-  }
-
-  const std::size_t remaining = size - offset;
-  if (static_cast<std::size_t>(written) >= remaining) {
-    return size - 1U;
-  }
-
-  return offset + static_cast<std::size_t>(written);
-}
-
-std::size_t append_vector3(
-  char * buffer, std::size_t size, std::size_t offset, const ImuVector3Data & value)
-{
-  offset = append_fixed(buffer, size, offset, value.x);
-  offset = append_text(buffer, size, offset, ",");
-  offset = append_fixed(buffer, size, offset, value.y);
-  offset = append_text(buffer, size, offset, ",");
-  return append_fixed(buffer, size, offset, value.z);
-}
-
-std::size_t build_imu_line(char * buffer, std::size_t size, const ImuTaskData & data)
-{
-  std::size_t offset = 0U;
-
-  offset = append_text(buffer, size, offset, "rpy_rad:");
-  offset = append_fixed(buffer, size, offset, data.euler.roll_rad);
-  offset = append_text(buffer, size, offset, ",");
-  offset = append_fixed(buffer, size, offset, data.euler.pitch_rad);
-  offset = append_text(buffer, size, offset, ",");
-  offset = append_fixed(buffer, size, offset, data.euler.yaw_rad);
-  offset = append_text(buffer, size, offset, " gyro_rad_s:");
-  offset = append_vector3(buffer, size, offset, data.gyro_rad_s);
-  offset = append_text(buffer, size, offset, " acc_mps2:");
-  offset = append_vector3(buffer, size, offset, data.acc_mps2);
-  offset = append_text(buffer, size, offset, " temp_c:");
-  offset = append_fixed(buffer, size, offset, data.temp_c);
-  offset = append_text(buffer, size, offset, "\r\n");
-
-  return offset;
-}
-}  // namespace
+extern sp::RM_Motor motor_lr;
+extern volatile bool lr_step_recording;
+extern volatile uint32_t lr_step_start_ms;
+extern volatile int16_t lr_step_current_raw;
 
 extern "C" void usart_task(void const * argument)
 {
   (void)argument;
 
+  constexpr TickType_t kSampleTicks = pdMS_TO_TICKS(10);
+  static uint8_t header[] = "time,current_raw,rpm\r\n";
+  bool was_recording = false;
+  TickType_t last_wake = xTaskGetTickCount();
+
   while (true) {
-    ImuTaskData data = {};
-    if (imu_task_get_data(&data)) {
-      const std::size_t length = build_imu_line(tx_buffer, sizeof(tx_buffer), data);
-      HAL_UART_Transmit(
-        &huart1, reinterpret_cast<uint8_t *>(tx_buffer), static_cast<uint16_t>(length),
-        kUartTimeoutMs);
+    taskENTER_CRITICAL();
+    const bool recording = lr_step_recording;
+    const uint32_t start_ms = lr_step_start_ms;
+    const int16_t current_raw = lr_step_current_raw;
+    const float speed_rad_s = motor_lr.speed;
+    const uint32_t sample_ms = osKernelSysTick();
+    taskEXIT_CRITICAL();
+
+    if (recording && std::isfinite(speed_rad_s)) {
+      if (!was_recording) {
+        HAL_UART_Transmit(&huart1, header, sizeof(header) - 1U, 10);
+      }
+
+      // The M3508 feedback speed is converted to wheel-shaft rad/s by RM_Motor.
+      const float rpm = speed_rad_s * (30.0f / sp::SP_PI);
+      const long rpm_tenths = static_cast<long>(rpm * 10.0f + (rpm >= 0.0f ? 0.5f : -0.5f));
+      const long rpm_abs = rpm_tenths < 0 ? -rpm_tenths : rpm_tenths;
+      char line[48];
+      const int length = std::snprintf(
+        line, sizeof(line), "%lu.%03lu,%d,%s%ld.%01ld\r\n",
+        static_cast<unsigned long>((sample_ms - start_ms) / 1000U),
+        static_cast<unsigned long>((sample_ms - start_ms) % 1000U),
+        static_cast<int>(current_raw), rpm_tenths < 0 ? "-" : "", rpm_abs / 10, rpm_abs % 10);
+      if (length > 0 && static_cast<std::size_t>(length) < sizeof(line)) {
+        HAL_UART_Transmit(&huart1, reinterpret_cast<uint8_t *>(line), length, 10);
+      }
     }
 
-    osDelay(kPrintPeriodMs);
+    was_recording = recording;
+    vTaskDelayUntil(&last_wake, kSampleTicks);
   }
 }
