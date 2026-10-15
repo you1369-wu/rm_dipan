@@ -20,9 +20,9 @@ extern "C" void plot_task(void const * argument)
     // 复制左前轮数据
     taskENTER_CRITICAL();
 
-    set = wheels[0].data.target_speed_set;
-    feedback = wheels[0].motor->speed;
-    torque = wheels[0].data.given_torque;
+    set = wheels[1].data.target_speed_set;
+    feedback = wheels[1].motor->speed;
+    torque = wheels[1].data.given_torque;
     taskEXIT_CRITICAL();
 
     // 顺序：目标轮速、实际轮速、给定力矩（pid_out）

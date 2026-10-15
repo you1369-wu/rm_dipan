@@ -45,10 +45,11 @@ sp::Mecanum chassis(0.077f, 0.165f, 0.185f, false, false, true, true);
 
 //                           dt      kp     ki    kd    mo     mio    alpha  ang?   dynamic?
 //需要对mo，mio进行限幅
-sp::PID motor_lf_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_lr_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_rf_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_rr_pid_speed(0.001f, 0.08f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lr_pid_speed(
+  0.001f, 100.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);  //can id 为1
+sp::PID motor_rf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_rr_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
 
 sp::PID * const wheel_pid[4] = {
   &motor_lf_pid_speed, &motor_lr_pid_speed, &motor_rf_pid_speed, &motor_rr_pid_speed};
