@@ -42,9 +42,9 @@ constexpr float kMaxWheelSpeed = 12.0f;                // 每个轮子目标角�
 constexpr float kAcceleration = 0.5f;                  // 平移目标加速度 m/s^2
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(1);  // 控制周期 1 ms
 constexpr bool kLrCurrentStepTest = true;
-constexpr uint32_t kStepAtMs = 200;
-constexpr uint32_t kStepEndMs = 1200;
-constexpr float kStepTorque = 0.4f;
+constexpr uint32_t kStepAtMs = 200;    //阶跃时间：0.2s
+constexpr uint32_t kStepEndMs = 1500;  //阶跃结束时间：1.5s
+constexpr float kStepTorque = 1.0f;    //给定力矩：0.4N·m
 static_assert(configTICK_RATE_HZ == 1000, "This controller requires 1 kHz RTOS tick");
 
 // 轮半径、前后半间距、左右半间距；右侧轮的转向按当前安装方向取反。
@@ -210,8 +210,8 @@ extern "C" void control_task(void const * argument)
           wheels[i].motor->cmd(i == 1U ? lr_torque : 0.0f);
           wheels[i].motor->write(can1.tx_data);
         }
-        lr_step_current_raw = static_cast<int16_t>(
-          (static_cast<uint16_t>(can1.tx_data[0]) << 8) | can1.tx_data[1]);
+        lr_step_current_raw =
+          static_cast<int16_t>((static_cast<uint16_t>(can1.tx_data[0]) << 8) | can1.tx_data[1]);
         can1.send(motor_lf.tx_id);
         lr_step_recording = true;
       }
