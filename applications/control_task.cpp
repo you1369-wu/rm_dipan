@@ -36,16 +36,16 @@ volatile float chassis_power_scale = 1.0f;
 
 namespace
 {
-constexpr float kMaxVx = 0.60f;                        // 前后最大目标速度为 0.60 m/s
-constexpr float kMaxVy = 0.60f;                        // 左右最大目标速度为 0.60 m/s
-constexpr float kStickDeadband = 0.05f;                // 摇杆死区
-constexpr float kDialDeadband = 0.10f;                 // 拨轮死区
-constexpr float kMaxWheelSpeedRadS = 12.0f;            // 每个轮子目标角速度上限，rad/s
-constexpr float kAcceleration = 0.5f;                  // 平移目标加速度 m/s^2
+constexpr float kMaxVx = 5.0f;               // 前后最大目标速度为 1m/s
+constexpr float kMaxVy = 5.0f;               // 左右最大目标速度为 1 m/s
+constexpr float kStickDeadband = 0.05f;      // 摇杆死区
+constexpr float kDialDeadband = 0.10f;       // 拨轮死区
+constexpr float kMaxWheelSpeedRadS = 12.0f;  // 每个轮子目标角速度上限，rad/s
+constexpr float kAcceleration = 0.5f;        // 平移目标加速度 m/s^2
 // 功率模型经验初值，需根据功率计实测数据重新标定。
-constexpr float kPowerK1 = 2.0f;
-constexpr float kPowerK2 = 0.01f;
-constexpr float kPowerK3 = 0.0f;
+constexpr float kPowerK1 = 2.6f;
+constexpr float kPowerK2 = 0.015f;
+constexpr float kPowerK3 = 4.0f;
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(1);  // 控制周期 1 ms
 static_assert(configTICK_RATE_HZ == 1000, "This controller requires 1 kHz RTOS tick");
 
@@ -110,44 +110,45 @@ bool run_wheel_speed_control(const float target_rad_s[4])
   // 模型结果异常时交由失能模式发送零指令。
   if (!std::isfinite(chassis_predicted_power_w)) return false;
 
-  // const float power_limit_w = static_cast<float>(pm02.robot_status.chassis_power_limit) - 5.0f;
-  // chassis_power_limit_w = power_limit_w;
+  const float power_limit_w = 10.0f;
+  //static_cast<float>(pm02.robot_status.chassis_power_limit) - 5.0f;  //读取功率上限
+  chassis_power_limit_w = power_limit_w;
 
-  // float kPowerK = 1.0f;
+  float kPowerK = 1.0f;
 
-  // // 可用功率额度不大于零时，发送零电流指令。
-  // if (power_limit_w <= 0.0f) {
-  //   kPowerK = 0.0f;
-  // }
-  // else if (chassis_predicted_power_w > power_limit_w) {
-  //   // P(K) - P_limit = a*K^2 + b*K + c，K 是等比例缩小四轮期望电流系数。
-  //   float a = 0.0f;
-  //   float b = 0.0f;
-  //   float c = kPowerK3 - power_limit_w;
-  //   for (unsigned i = 0; i < 4U; ++i) {
-  //     a += kPowerK1 * torque[i] * torque[i];
-  //     b += torque[i] * feedback_rad_s[i];
-  //     c += kPowerK2 * feedback_rad_s[i] * feedback_rad_s[i];
-  //   }
+  // 可用功率额度不大于零时，发送零电流指令。
+  if (power_limit_w <= 0.0f) {
+    kPowerK = 0.0f;
+  }
+  else if (chassis_predicted_power_w > power_limit_w) {
+    // P(K) - P_limit = a*K^2 + b*K + c，K 是等比例缩小四轮期望电流系数。
+    float a = 0.0f;
+    float b = 0.0f;
+    float c = kPowerK3 - power_limit_w;
+    for (unsigned i = 0; i < 4U; ++i) {
+      a += kPowerK1 * torque[i] * torque[i];
+      b += torque[i] * feedback_rad_s[i];
+      c += kPowerK2 * feedback_rad_s[i] * feedback_rad_s[i];
+    }
 
-  //   // 二次项为零或无实数解时，按零电流处理，避免除零和无效输出。
-  //   const float discriminant = b * b - 4.0f * a * c;
-  //   if (a <= 0.0f || discriminant < 0.0f) {
-  //     kPowerK = 0.0f;
-  //   }
-  //   else {
-  //     kPowerK = (-b + std::sqrt(discriminant)) / (2.0f * a);
-  //   }
+    // 二次项为零或无实数解时，按零电流处理，避免除零和无效输出。
+    const float discriminant = b * b - 4.0f * a * c;
+    if (a <= 0.0f || discriminant < 0.0f) {
+      kPowerK = 0.0f;
+    }
+    else {
+      kPowerK = (-b + std::sqrt(discriminant)) / (2.0f * a);
+    }
 
-  //   // 缩放系数只允许减小原电流，不能反向或放大。
-  //   if (kPowerK < 0.0f) kPowerK = 0.0f;
-  //   if (kPowerK > 1.0f) kPowerK = 1.0f;
-  // }
+    // 缩放系数只允许减小原电流，不能反向或放大。
+    if (kPowerK < 0.0f) kPowerK = 0.0f;
+    if (kPowerK > 1.0f) kPowerK = 1.0f;
+  }
 
-  // chassis_power_scale = kPowerK;
-  // for (auto & wheel : wheels) {
-  //   wheel.data.given_torque *= kPowerK;  //I_new = K * I_original
-  //}
+  chassis_power_scale = kPowerK;
+  for (auto & wheel : wheels) {
+    wheel.data.given_torque *= kPowerK;  //I_new = K * I_original
+  }
 
   // 发送前复查，防止计算期间遥控器失联或电机反馈超时。
   taskENTER_CRITICAL();
