@@ -20,9 +20,9 @@ extern sp::RM_Motor motor_rf;
 extern sp::RM_Motor motor_rr;
 
 ChassisWheel wheels[4] = {{&motor_lf, {}}, {&motor_lr, {}}, {&motor_rf, {}}, {&motor_rr, {}}};
-float chassis_vx_set = 0.0f;
-float chassis_vy_set = 0.0f;
-float chassis_wz_set = 0.0f;
+float chassis_vx_set = 0.0f;  // 车体前后速度，m/s
+float chassis_vy_set = 0.0f;  // 车体横向速度，m/s
+float chassis_wz_set = 0.0f;  // 车体旋转角速度，rad/s
 float wheel_pid_p[4] = {};
 float wheel_pid_i[4] = {};
 float wheel_pid_d[4] = {};
@@ -36,12 +36,12 @@ volatile float chassis_power_scale = 1.0f;
 
 namespace
 {
-constexpr float kMaxVx = 0.30f;          // 前后最大目标速度为 0.30 m/s
-constexpr float kMaxVy = 0.30f;          // 左右最大目标速度为 0.30 m/s
-constexpr float kStickDeadband = 0.05f;  // 摇杆死区
-constexpr float kDialDeadband = 0.10f;   // 拨轮死区
-constexpr float kMaxWheelSpeed = 12.0f;  // 每个轮子目标角速度上限 rad/s
-constexpr float kAcceleration = 0.5f;    // 平移目标加速度 m/s^2
+constexpr float kMaxVx = 0.60f;                        // 前后最大目标速度为 0.60 m/s
+constexpr float kMaxVy = 0.60f;                        // 左右最大目标速度为 0.60 m/s
+constexpr float kStickDeadband = 0.05f;                // 摇杆死区
+constexpr float kDialDeadband = 0.10f;                 // 拨轮死区
+constexpr float kMaxWheelSpeedRadS = 12.0f;            // 每个轮子目标角速度上限，rad/s
+constexpr float kAcceleration = 0.5f;                  // 平移目标加速度 m/s^2
 // 功率模型经验初值，需根据功率计实测数据重新标定。
 constexpr float kPowerK1 = 2.0f;
 constexpr float kPowerK2 = 0.01f;
@@ -54,11 +54,10 @@ sp::Mecanum chassis(0.077f, 0.165f, 0.185f, false, false, true, true);
 
 //                           dt      kp     ki    kd    mo     mio    alpha  ang?   dynamic?
 //需要对mo，mio进行限幅
-sp::PID motor_lf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_lr_pid_speed(
-  0.001f, 100.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);  //can id 为1
-sp::PID motor_rf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_rr_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lf_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
+sp::PID motor_lr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);  //can id 为1
+sp::PID motor_rf_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
+sp::PID motor_rr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
 
 sp::PID * const wheel_pid[4] = {
   &motor_lf_pid_speed, &motor_lr_pid_speed, &motor_rf_pid_speed, &motor_rr_pid_speed};
@@ -76,15 +75,15 @@ float predict_chassis_power(
 
 // 目标轮速按左前、左后、右前、右后排列，单位 rad/s。
 // 读取并检查四轮反馈后，运行各自的单速度环 PID，再统一发送控制帧。
-bool run_wheel_speed_control(const float target[4])
+bool run_wheel_speed_control(const float target_rad_s[4])
 {
-  float feedback[4] = {};
+  float feedback_rad_s[4] = {};
   bool feedback_valid = true;
   const uint32_t now_ms = osKernelSysTick();
   taskENTER_CRITICAL();
   for (unsigned i = 0; i < 4U; ++i) {
-    feedback[i] = wheels[i].motor->speed;
-    if (!wheels[i].motor->is_alive(now_ms) || !std::isfinite(feedback[i])) {
+    feedback_rad_s[i] = wheels[i].motor->speed;
+    if (!wheels[i].motor->is_alive(now_ms) || !std::isfinite(feedback_rad_s[i])) {
       feedback_valid = false;
     }
   }
@@ -95,8 +94,8 @@ bool run_wheel_speed_control(const float target[4])
 
   float torque[4] = {};
   for (unsigned i = 0; i < 4U; ++i) {
-    wheels[i].data.target_speed_set = target[i];
-    wheel_pid[i]->calc(wheels[i].data.target_speed_set, feedback[i]);
+    wheels[i].data.target_speed_set = target_rad_s[i];
+    wheel_pid[i]->calc(wheels[i].data.target_speed_set, feedback_rad_s[i]);
     wheels[i].data.given_torque = wheel_pid[i]->out;
     torque[i] = wheels[i].data.given_torque;
     wheel_pid_p[i] = wheel_pid[i]->data.pout;
@@ -105,7 +104,8 @@ bool run_wheel_speed_control(const float target[4])
   }
 
   // PID 计算后、CAN 发送前预测功率。并按裁判系统上限缩放四轮转矩，限制功率。
-  chassis_predicted_power_w = predict_chassis_power(torque, feedback, kPowerK1, kPowerK2, kPowerK3);
+  chassis_predicted_power_w =
+    predict_chassis_power(torque, feedback_rad_s, kPowerK1, kPowerK2, kPowerK3);
 
   // 模型结果异常时交由失能模式发送零指令。
   if (!std::isfinite(chassis_predicted_power_w)) return false;
@@ -126,8 +126,8 @@ bool run_wheel_speed_control(const float target[4])
   //   float c = kPowerK3 - power_limit_w;
   //   for (unsigned i = 0; i < 4U; ++i) {
   //     a += kPowerK1 * torque[i] * torque[i];
-  //     b += torque[i] * feedback[i];
-  //     c += kPowerK2 * feedback[i] * feedback[i];
+  //     b += torque[i] * feedback_rad_s[i];
+  //     c += kPowerK2 * feedback_rad_s[i] * feedback_rad_s[i];
   //   }
 
   //   // 二次项为零或无实数解时，按零电流处理，避免除零和无效输出。
@@ -273,18 +273,20 @@ extern "C" void control_task(void const * argument)
                          ? 0.0f
                          : static_cast<float>(sp::sgn(remote_data.ch_lu));
 
-      chassis.calc(chassis_vx_set, chassis_vy_set, chassis_wz_set);  //麦轮运动学解算
-      float target[4] = {chassis.speed_lf, chassis.speed_lr, chassis.speed_rf, chassis.speed_rr};
-      float peak = 0.0f;
-      for (float speed : target) {
-        if (std::fabs(speed) > peak) peak = std::fabs(speed);
+      // 麦轮解算将车体 m/s、rad/s 转为四轮目标角速度 rad/s。
+      chassis.calc(chassis_vx_set, chassis_vy_set, chassis_wz_set);
+      float target_rad_s[4] = {
+        chassis.speed_lf, chassis.speed_lr, chassis.speed_rf, chassis.speed_rr};
+      float peak_rad_s = 0.0f;
+      for (float speed_rad_s : target_rad_s) {
+        if (std::fabs(speed_rad_s) > peak_rad_s) peak_rad_s = std::fabs(speed_rad_s);
       }
-      const float scale = peak > kMaxWheelSpeed ? kMaxWheelSpeed / peak : 1.0f;
+      const float scale = peak_rad_s > kMaxWheelSpeedRadS ? kMaxWheelSpeedRadS / peak_rad_s : 1.0f;
       for (unsigned i = 0; i < 4U; ++i) {
-        target[i] *= scale;
+        target_rad_s[i] *= scale;
       }
 
-      if (!run_wheel_speed_control(target)) {
+      if (!run_wheel_speed_control(target_rad_s)) {
         run_disable_mode();
       }
     }
