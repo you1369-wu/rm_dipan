@@ -19,9 +19,9 @@ extern sp::RM_Motor motor_rf;
 extern sp::RM_Motor motor_rr;
 
 ChassisWheel wheels[4] = {{&motor_lf, {}}, {&motor_lr, {}}, {&motor_rf, {}}, {&motor_rr, {}}};
-float chassis_vx_set = 0.0f;
-float chassis_vy_set = 0.0f;
-float chassis_wz_set = 0.0f;
+float chassis_vx_set = 0.0f;  // 车体前后速度，m/s
+float chassis_vy_set = 0.0f;  // 车体横向速度，m/s
+float chassis_wz_set = 0.0f;  // 车体旋转角速度，rad/s
 float wheel_pid_p[4] = {};
 float wheel_pid_i[4] = {};
 float wheel_pid_d[4] = {};
@@ -31,11 +31,11 @@ volatile bool chassis_right_switch_mid = false;
 
 namespace
 {
-constexpr float kMaxVx = 0.30f;                        // 前后最大目标速度为 0.30 m/s
-constexpr float kMaxVy = 0.30f;                        // 左右最大目标速度为 0.30 m/s
+constexpr float kMaxVx = 0.60f;                        // 前后最大目标速度为 0.50 m/s
+constexpr float kMaxVy = 0.60f;                        // 左右最大目标速度为 0.50 m/s
 constexpr float kStickDeadband = 0.05f;                // 摇杆死区
 constexpr float kDialDeadband = 0.10f;                 // 拨轮死区
-constexpr float kMaxWheelSpeed = 12.0f;                // 每个轮子目标角速度上限 rad/s
+constexpr float kMaxWheelSpeedRadS = 12.0f;            // 每个轮子目标角速度上限，rad/s
 constexpr float kAcceleration = 0.5f;                  // 平移目标加速度 m/s^2
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(1);  // 控制周期 1 ms
 static_assert(configTICK_RATE_HZ == 1000, "This controller requires 1 kHz RTOS tick");
@@ -45,26 +45,25 @@ sp::Mecanum chassis(0.077f, 0.165f, 0.185f, false, false, true, true);
 
 //                           dt      kp     ki    kd    mo     mio    alpha  ang?   dynamic?
 //需要对mo，mio进行限幅
-sp::PID motor_lf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_lr_pid_speed(
-  0.001f, 100.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);  //can id 为1
-sp::PID motor_rf_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
-sp::PID motor_rr_pid_speed(0.001f, 0.0f, 0.0f, 0.0f, 0.50f, 0.10f, 1.0f, false, true);
+sp::PID motor_lf_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
+sp::PID motor_lr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);  //can id 为1
+sp::PID motor_rf_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
+sp::PID motor_rr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
 
 sp::PID * const wheel_pid[4] = {
   &motor_lf_pid_speed, &motor_lr_pid_speed, &motor_rf_pid_speed, &motor_rr_pid_speed};
 
 // 目标轮速按左前、左后、右前、右后排列，单位 rad/s。
 // 读取并检查四轮反馈后，运行各自的单速度环 PID，再统一发送控制帧。
-bool run_wheel_speed_control(const float target[4])
+bool run_wheel_speed_control(const float target_rad_s[4])
 {
-  float feedback[4] = {};
+  float feedback_rad_s[4] = {};
   bool feedback_valid = true;
   const uint32_t now_ms = osKernelSysTick();
   taskENTER_CRITICAL();
   for (unsigned i = 0; i < 4U; ++i) {
-    feedback[i] = wheels[i].motor->speed;
-    if (!wheels[i].motor->is_alive(now_ms) || !std::isfinite(feedback[i])) {
+    feedback_rad_s[i] = wheels[i].motor->speed;
+    if (!wheels[i].motor->is_alive(now_ms) || !std::isfinite(feedback_rad_s[i])) {
       feedback_valid = false;
     }
   }
@@ -74,8 +73,8 @@ bool run_wheel_speed_control(const float target[4])
   if (!feedback_valid) return false;
 
   for (unsigned i = 0; i < 4U; ++i) {
-    wheels[i].data.target_speed_set = target[i];
-    wheel_pid[i]->calc(wheels[i].data.target_speed_set, feedback[i]);
+    wheels[i].data.target_speed_set = target_rad_s[i];
+    wheel_pid[i]->calc(wheels[i].data.target_speed_set, feedback_rad_s[i]);
     wheels[i].data.given_torque = wheel_pid[i]->out;
     wheel_pid_p[i] = wheel_pid[i]->data.pout;
     wheel_pid_i[i] = wheel_pid[i]->data.iout;
@@ -202,18 +201,20 @@ extern "C" void control_task(void const * argument)
                          ? 0.0f
                          : static_cast<float>(sp::sgn(remote_data.ch_lu));
 
-      chassis.calc(chassis_vx_set, chassis_vy_set, chassis_wz_set);  //麦轮运动学解算
-      float target[4] = {chassis.speed_lf, chassis.speed_lr, chassis.speed_rf, chassis.speed_rr};
-      float peak = 0.0f;
-      for (float speed : target) {
-        if (std::fabs(speed) > peak) peak = std::fabs(speed);
+      // 麦轮解算将车体 m/s、rad/s 转为四轮目标角速度 rad/s。
+      chassis.calc(chassis_vx_set, chassis_vy_set, chassis_wz_set);
+      float target_rad_s[4] = {
+        chassis.speed_lf, chassis.speed_lr, chassis.speed_rf, chassis.speed_rr};
+      float peak_rad_s = 0.0f;
+      for (float speed_rad_s : target_rad_s) {
+        if (std::fabs(speed_rad_s) > peak_rad_s) peak_rad_s = std::fabs(speed_rad_s);
       }
-      const float scale = peak > kMaxWheelSpeed ? kMaxWheelSpeed / peak : 1.0f;
+      const float scale = peak_rad_s > kMaxWheelSpeedRadS ? kMaxWheelSpeedRadS / peak_rad_s : 1.0f;
       for (unsigned i = 0; i < 4U; ++i) {
-        target[i] *= scale;
+        target_rad_s[i] *= scale;
       }
 
-      if (!run_wheel_speed_control(target)) {
+      if (!run_wheel_speed_control(target_rad_s)) {
         run_disable_mode();
       }
     }
