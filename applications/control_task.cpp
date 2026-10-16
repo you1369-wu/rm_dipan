@@ -110,44 +110,44 @@ bool run_wheel_speed_control(const float target[4])
   // 模型结果异常时交由失能模式发送零指令。
   if (!std::isfinite(chassis_predicted_power_w)) return false;
 
-  const float power_limit_w = static_cast<float>(pm02.robot_status.chassis_power_limit) - 5.0f;
-  chassis_power_limit_w = power_limit_w;
+  // const float power_limit_w = static_cast<float>(pm02.robot_status.chassis_power_limit) - 5.0f;
+  // chassis_power_limit_w = power_limit_w;
 
-  float kPowerK = 1.0f;
+  // float kPowerK = 1.0f;
 
-  // 可用功率额度不大于零时，发送零电流指令。
-  if (power_limit_w <= 0.0f) {
-    kPowerK = 0.0f;
-  }
-  else if (chassis_predicted_power_w > power_limit_w) {
-    // P(K) - P_limit = a*K^2 + b*K + c，K 是等比例缩小四轮期望电流系数。
-    float a = 0.0f;
-    float b = 0.0f;
-    float c = kPowerK3 - power_limit_w;
-    for (unsigned i = 0; i < 4U; ++i) {
-      a += kPowerK1 * torque[i] * torque[i];
-      b += torque[i] * feedback[i];
-      c += kPowerK2 * feedback[i] * feedback[i];
-    }
+  // // 可用功率额度不大于零时，发送零电流指令。
+  // if (power_limit_w <= 0.0f) {
+  //   kPowerK = 0.0f;
+  // }
+  // else if (chassis_predicted_power_w > power_limit_w) {
+  //   // P(K) - P_limit = a*K^2 + b*K + c，K 是等比例缩小四轮期望电流系数。
+  //   float a = 0.0f;
+  //   float b = 0.0f;
+  //   float c = kPowerK3 - power_limit_w;
+  //   for (unsigned i = 0; i < 4U; ++i) {
+  //     a += kPowerK1 * torque[i] * torque[i];
+  //     b += torque[i] * feedback[i];
+  //     c += kPowerK2 * feedback[i] * feedback[i];
+  //   }
 
-    // 二次项为零或无实数解时，按零电流处理，避免除零和无效输出。
-    const float discriminant = b * b - 4.0f * a * c;
-    if (a <= 0.0f || discriminant < 0.0f) {
-      kPowerK = 0.0f;
-    }
-    else {
-      kPowerK = (-b + std::sqrt(discriminant)) / (2.0f * a);
-    }
+  //   // 二次项为零或无实数解时，按零电流处理，避免除零和无效输出。
+  //   const float discriminant = b * b - 4.0f * a * c;
+  //   if (a <= 0.0f || discriminant < 0.0f) {
+  //     kPowerK = 0.0f;
+  //   }
+  //   else {
+  //     kPowerK = (-b + std::sqrt(discriminant)) / (2.0f * a);
+  //   }
 
-    // 缩放系数只允许减小原电流，不能反向或放大。
-    if (kPowerK < 0.0f) kPowerK = 0.0f;
-    if (kPowerK > 1.0f) kPowerK = 1.0f;
-  }
+  //   // 缩放系数只允许减小原电流，不能反向或放大。
+  //   if (kPowerK < 0.0f) kPowerK = 0.0f;
+  //   if (kPowerK > 1.0f) kPowerK = 1.0f;
+  // }
 
-  chassis_power_scale = kPowerK;
-  for (auto & wheel : wheels) {
-    wheel.data.given_torque *= kPowerK;  //I_new = K * I_original
-  }
+  // chassis_power_scale = kPowerK;
+  // for (auto & wheel : wheels) {
+  //   wheel.data.given_torque *= kPowerK;  //I_new = K * I_original
+  //}
 
   // 发送前复查，防止计算期间遥控器失联或电机反馈超时。
   taskENTER_CRITICAL();
