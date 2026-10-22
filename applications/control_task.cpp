@@ -36,8 +36,8 @@ volatile float chassis_power_scale = 1.0f;
 
 namespace
 {
-constexpr float kMaxVx = 3.5f;               // 前后最大目标速度为 3.5 m/s
-constexpr float kMaxVy = 3.5f;               // 左右最大目标速度为 3.5 m/s
+constexpr float kMaxVx = 5.0f;               // 前后最大目标速度为 3.5 m/s
+constexpr float kMaxVy = 5.0f;               // 左右最大目标速度为 3.5 m/s
 constexpr float kStickDeadband = 0.05f;      // 摇杆死区
 constexpr float kDialDeadband = 0.10f;       // 拨轮死区
 constexpr float kSpinWz = 15.0f;             // 小陀螺目标角速度大小，rad/s；旋转方向由拨轮决定
