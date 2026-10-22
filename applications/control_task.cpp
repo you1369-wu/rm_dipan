@@ -40,6 +40,7 @@ constexpr float kMaxVx = 5.0f;               // 前后最大目标速度为 1m/s
 constexpr float kMaxVy = 5.0f;               // 左右最大目标速度为 1 m/s
 constexpr float kStickDeadband = 0.05f;      // 摇杆死区
 constexpr float kDialDeadband = 0.10f;       // 拨轮死区
+constexpr float kSpinWz = 15.0f;             // 小陀螺目标角速度大小，rad/s；旋转方向由拨轮决定
 constexpr float kMaxWheelSpeedRadS = 12.0f;  // 每个轮子目标角速度上限，rad/s
 constexpr float kAcceleration = 0.5f;        // 平移目标加速度 m/s^2
 // 功率模型经验初值，需根据功率计实测数据重新标定。
@@ -110,7 +111,7 @@ bool run_wheel_speed_control(const float target_rad_s[4])
   // 模型结果异常时交由失能模式发送零指令。
   if (!std::isfinite(chassis_predicted_power_w)) return false;
 
-  const float power_limit_w = 10.0f;
+  const float power_limit_w = 15.0f;
   //static_cast<float>(pm02.robot_status.chassis_power_limit) - 5.0f;  //读取功率上限
   chassis_power_limit_w = power_limit_w;
 
@@ -272,7 +273,7 @@ extern "C" void control_task(void const * argument)
       // 拨轮映射到旋转速度（拨轮死区外定速旋转：正=逆时针，负=顺时针。）
       chassis_wz_set = std::fabs(remote_data.ch_lu) <= kDialDeadband
                          ? 0.0f
-                         : static_cast<float>(sp::sgn(remote_data.ch_lu));
+                         : static_cast<float>(sp::sgn(remote_data.ch_lu)) * kSpinWz;
 
       // 麦轮解算将车体 m/s、rad/s 转为四轮目标角速度 rad/s。
       chassis.calc(chassis_vx_set, chassis_vy_set, chassis_wz_set);
