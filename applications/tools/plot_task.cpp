@@ -1,10 +1,9 @@
 #include "cmsis_os.h"
-#include "control_task.hpp"
 #include "io/plotter/plotter.hpp"
 
-extern float wheel_pid_p[4];
-extern float wheel_pid_i[4];
-extern float wheel_pid_d[4];
+extern volatile float chassis_predicted_power_w;
+extern volatile float chassis_real_power_w;
+extern volatile float chassis_power_limit_w;
 
 sp::Plotter plotter(&huart1, false);
 
@@ -12,21 +11,17 @@ extern "C" void plot_task(void const * argument)
 {
   (void)argument;
 
-  constexpr unsigned kPlotWheel = 1U;  // 左后轮 LR
   while (true) {
-    float set, feedback, p_out, i_out, d_out;
+    float predicted_power_w, real_power_w, power_limit_w;
 
-    // 复制目标轮速、反馈轮速及 PID 三项输出。
+    // 取得同一时刻的功率快照，三条曲线单位均为 W。
     taskENTER_CRITICAL();
-    set = wheels[kPlotWheel].data.target_speed_set;
-    feedback = wheels[kPlotWheel].motor->speed;
-    p_out = wheel_pid_p[kPlotWheel];
-    i_out = wheel_pid_i[kPlotWheel];
-    d_out = wheel_pid_d[kPlotWheel];
+    predicted_power_w = chassis_predicted_power_w;
+    real_power_w = chassis_real_power_w;
+    power_limit_w = chassis_power_limit_w;
     taskEXIT_CRITICAL();
 
-    // 通道顺序：目标轮速、实际轮速、P、I、D。
-    plotter.plot(set, feedback, p_out, i_out, d_out);
+    plotter.plot(predicted_power_w, real_power_w, power_limit_w);
 
     osDelay(10);
   }

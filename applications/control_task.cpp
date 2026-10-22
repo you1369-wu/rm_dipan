@@ -7,6 +7,7 @@
 #include "cmsis_os.h"
 #include "io/can/can.hpp"
 #include "motor/rm_motor/rm_motor.hpp"
+#include "referee.hpp"
 #include "remote_task.h"
 #include "tools/math_tools/math_tools.hpp"
 #include "tools/mecanum/mecanum.hpp"
@@ -28,15 +29,24 @@ float wheel_pid_d[4] = {};
 volatile bool chassis_remote_online = false;
 volatile bool chassis_motors_online = false;
 volatile bool chassis_right_switch_mid = false;
+volatile float chassis_predicted_power_w = 0.0f;
+volatile float chassis_real_power_w = 0.0f;
+volatile float chassis_power_limit_w = 0.0f;
+volatile float chassis_power_scale = 1.0f;
 
 namespace
 {
-constexpr float kMaxVx = 0.60f;                        // 前后最大目标速度为 0.50 m/s
-constexpr float kMaxVy = 0.60f;                        // 左右最大目标速度为 0.50 m/s
-constexpr float kStickDeadband = 0.05f;                // 摇杆死区
-constexpr float kDialDeadband = 0.10f;                 // 拨轮死区
-constexpr float kMaxWheelSpeedRadS = 12.0f;            // 每个轮子目标角速度上限，rad/s
-constexpr float kAcceleration = 0.5f;                  // 平移目标加速度 m/s^2
+constexpr float kMaxVx = 5.0f;               // 前后最大目标速度为 3.5 m/s
+constexpr float kMaxVy = 5.0f;               // 左右最大目标速度为 3.5 m/s
+constexpr float kStickDeadband = 0.05f;      // 摇杆死区
+constexpr float kDialDeadband = 0.10f;       // 拨轮死区
+constexpr float kSpinWz = 15.0f;             // 小陀螺目标角速度大小，rad/s；旋转方向由拨轮决定
+constexpr float kMaxWheelSpeedRadS = 12.0f;  // 每个轮子目标角速度上限，rad/s
+constexpr float kAcceleration = 0.5f;        // 平移目标加速度 m/s^2
+// 功率模型经验初值，需根据功率计实测数据重新标定。
+constexpr float kPowerK1 = 2.6f;
+constexpr float kPowerK2 = 0.015f;
+constexpr float kPowerK3 = 4.0f;
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(1);  // 控制周期 1 ms
 static_assert(configTICK_RATE_HZ == 1000, "This controller requires 1 kHz RTOS tick");
 
@@ -52,6 +62,17 @@ sp::PID motor_rr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, tr
 
 sp::PID * const wheel_pid[4] = {
   &motor_lf_pid_speed, &motor_lr_pid_speed, &motor_rf_pid_speed, &motor_rr_pid_speed};
+
+// 用四轮期望转矩和实际轮轴转速预测底盘输入功率
+float predict_chassis_power(
+  const float torque[4], const float omega[4], float k1, float k2, float k3)
+{
+  float power = k3;
+  for (unsigned i = 0; i < 4U; ++i) {
+    power += torque[i] * omega[i] + k1 * torque[i] * torque[i] + k2 * omega[i] * omega[i];
+  }
+  return power;
+}
 
 // 目标轮速按左前、左后、右前、右后排列，单位 rad/s。
 // 读取并检查四轮反馈后，运行各自的单速度环 PID，再统一发送控制帧。
@@ -72,13 +93,62 @@ bool run_wheel_speed_control(const float target_rad_s[4])
   chassis_motors_online = feedback_valid;
   if (!feedback_valid) return false;
 
+  float torque[4] = {};
   for (unsigned i = 0; i < 4U; ++i) {
     wheels[i].data.target_speed_set = target_rad_s[i];
     wheel_pid[i]->calc(wheels[i].data.target_speed_set, feedback_rad_s[i]);
     wheels[i].data.given_torque = wheel_pid[i]->out;
+    torque[i] = wheels[i].data.given_torque;
     wheel_pid_p[i] = wheel_pid[i]->data.pout;
     wheel_pid_i[i] = wheel_pid[i]->data.iout;
     wheel_pid_d[i] = wheel_pid[i]->data.dout;
+  }
+
+  // PID 计算后、CAN 发送前预测功率。并按裁判系统上限缩放四轮转矩，限制功率。
+  chassis_predicted_power_w =
+    predict_chassis_power(torque, feedback_rad_s, kPowerK1, kPowerK2, kPowerK3);
+
+  // 模型结果异常时交由失能模式发送零指令。
+  if (!std::isfinite(chassis_predicted_power_w)) return false;
+
+  const float power_limit_w = 15.0f;
+  //static_cast<float>(pm02.robot_status.chassis_power_limit) - 5.0f;  //读取功率上限
+  chassis_power_limit_w = power_limit_w;
+
+  float kPowerK = 1.0f;
+
+  // 可用功率额度不大于零时，发送零电流指令。
+  if (power_limit_w <= 0.0f) {
+    kPowerK = 0.0f;
+  }
+  else if (chassis_predicted_power_w > power_limit_w) {
+    // P(K) - P_limit = a*K^2 + b*K + c，K 是等比例缩小四轮期望电流系数。
+    float a = 0.0f;
+    float b = 0.0f;
+    float c = kPowerK3 - power_limit_w;
+    for (unsigned i = 0; i < 4U; ++i) {
+      a += kPowerK1 * torque[i] * torque[i];
+      b += torque[i] * feedback_rad_s[i];
+      c += kPowerK2 * feedback_rad_s[i] * feedback_rad_s[i];
+    }
+
+    // 二次项为零或无实数解时，按零电流处理，避免除零和无效输出。
+    const float discriminant = b * b - 4.0f * a * c;
+    if (a <= 0.0f || discriminant < 0.0f) {
+      kPowerK = 0.0f;
+    }
+    else {
+      kPowerK = (-b + std::sqrt(discriminant)) / (2.0f * a);
+    }
+
+    // 缩放系数只允许减小原电流，不能反向或放大。
+    if (kPowerK < 0.0f) kPowerK = 0.0f;
+    if (kPowerK > 1.0f) kPowerK = 1.0f;
+  }
+
+  chassis_power_scale = kPowerK;
+  for (auto & wheel : wheels) {
+    wheel.data.given_torque *= kPowerK;  //I_new = K * I_original
   }
 
   // 发送前复查，防止计算期间遥控器失联或电机反馈超时。
@@ -112,6 +182,9 @@ bool run_wheel_speed_control(const float target_rad_s[4])
 void run_disable_mode()
 {
   chassis_motors_online = false;
+  chassis_predicted_power_w = 0.0f;
+  chassis_power_limit_w = 0.0f;
+  chassis_power_scale = 1.0f;
   chassis_vx_set = 0.0f;
   chassis_vy_set = 0.0f;
   chassis_wz_set = 0.0f;
@@ -142,6 +215,7 @@ extern "C" void control_task(void const * argument)
   can1.config();
   can1.start();
   run_disable_mode();
+  referee_start_receive();
 
   TickType_t last_wake = xTaskGetTickCount();
   uint32_t last_cycle_ms = osKernelSysTick();
@@ -199,7 +273,7 @@ extern "C" void control_task(void const * argument)
       // 拨轮映射到旋转速度（拨轮死区外定速旋转：正=逆时针，负=顺时针。）
       chassis_wz_set = std::fabs(remote_data.ch_lu) <= kDialDeadband
                          ? 0.0f
-                         : static_cast<float>(sp::sgn(remote_data.ch_lu));
+                         : static_cast<float>(sp::sgn(remote_data.ch_lu)) * kSpinWz;
 
       // 麦轮解算将车体 m/s、rad/s 转为四轮目标角速度 rad/s。
       chassis.calc(chassis_vx_set, chassis_vy_set, chassis_wz_set);
@@ -233,6 +307,7 @@ extern "C" void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef * hcan)
   while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0U) {
     CAN_RxHeaderTypeDef header = {};
     uint8_t data[8] = {};
+
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, data) != HAL_OK) {
       break;
     }
@@ -242,6 +317,16 @@ extern "C" void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef * hcan)
     }
 
     const uint32_t stamp_ms = osKernelSysTick();
+
+    //分流功率计反馈帧
+    if (header.StdId == 0x301U) {
+      // 功率计反馈为大端、单位 0.01 W。
+      const uint16_t power_x100 = (static_cast<uint16_t>(data[4]) << 8) | data[5];
+      chassis_real_power_w = power_x100 / 100.0f;
+      continue;
+    }
+
+    //根据 ID 分流 CAN 数据到对应电机
     for (auto & wheel : wheels) {
       if (header.StdId == wheel.motor->rx_id) {
         wheel.motor->read(data, stamp_ms);
