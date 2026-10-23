@@ -36,13 +36,13 @@ volatile float chassis_power_scale = 1.0f;
 
 namespace
 {
-constexpr float kMaxVx = 5.0f;              // 前后最大目标速度为 3.5 m/s
-constexpr float kMaxVy = 5.0f;              // 左右最大目标速度为 3.5 m/s
-constexpr float kStickDeadband = 0.05f;     // 摇杆死区
-constexpr float kDialDeadband = 0.10f;      // 拨轮死区
-constexpr float kSpinWz = 15.0f;            // 小陀螺目标角速度大小，rad/s；旋转方向由拨轮决定
-constexpr float kMaxWheelSpeedRadS = 1.0f;  // 每个轮子目标角速度上限，rad/s
-constexpr float kAcceleration = 0.5f;       // 平移目标加速度 m/s^2
+constexpr float kMaxVx = 4.0f;               // 前后最大目标速度为 3.5 m/s
+constexpr float kMaxVy = 4.0f;               // 左右最大目标速度为 3.5 m/s
+constexpr float kStickDeadband = 0.05f;      // 摇杆死区
+constexpr float kDialDeadband = 0.10f;       // 拨轮死区
+constexpr float kSpinWz = 1.0f;              // 小陀螺目标角速度大小，rad/s；旋转方向由拨轮决定
+constexpr float kMaxWheelSpeedRadS = 12.0f;  // 每个轮子目标角速度上限，rad/s
+constexpr float kAcceleration = 0.5f;        // 平移目标加速度 m/s^2
 // 功率模型经验初值，需根据功率计实测数据重新标定。
 constexpr float kPowerK1 = 2.6f;
 constexpr float kPowerK2 = 0.015f;
@@ -55,10 +55,10 @@ sp::Mecanum chassis(0.077f, 0.165f, 0.185f, false, false, true, true);
 
 //                           dt      kp     ki    kd    mo     mio    alpha  ang?   dynamic?
 //需要对mo，mio进行限幅
-sp::PID motor_lf_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
-sp::PID motor_lr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);  //can id 为1
-sp::PID motor_rf_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
-sp::PID motor_rr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 0.7f, 0.5f, 1.0f, false, true);
+sp::PID motor_lf_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 3.0f, 0.5f, 1.0f, false, true);
+sp::PID motor_lr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 3.0f, 0.5f, 1.0f, false, true);  //can id 为1
+sp::PID motor_rf_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 3.0f, 0.5f, 1.0f, false, true);
+sp::PID motor_rr_pid_speed(0.001f, 0.6f, 0.3f, 0.0f, 3.0f, 0.5f, 1.0f, false, true);
 
 sp::PID * const wheel_pid[4] = {
   &motor_lf_pid_speed, &motor_lr_pid_speed, &motor_rf_pid_speed, &motor_rr_pid_speed};
@@ -111,7 +111,7 @@ bool run_wheel_speed_control(const float target_rad_s[4])
   // 模型结果异常时交由失能模式发送零指令。
   if (!std::isfinite(chassis_predicted_power_w)) return false;
 
-  const float power_limit_w = 15.0f;
+  const float power_limit_w = 80.0f;
   //static_cast<float>(pm02.robot_status.chassis_power_limit) - 5.0f;  //读取功率上限
   chassis_power_limit_w = power_limit_w;
 
