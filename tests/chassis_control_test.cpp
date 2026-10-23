@@ -132,15 +132,17 @@ int main()
   prepare();
   const uint32_t start = start_auto();
   check(control_source == ControlSource::AUTOMATIC &&
-          near(chassis_vx_set, mission_config::kForwardSpeedMps) &&
+          near(chassis_vx_set, mission_config::kForwardWheelSpeedRadS * kWheelRadiusM) &&
           chassis_vy_set == 0.0f && chassis_wz_set == 0.0f, "auto requests forward-only body velocity");
   const float forward_wheel_speed =
-    std::min(mission_config::kForwardSpeedMps / 0.077f, kMaxWheelSpeedRadS);
+    std::min(mission_config::kForwardWheelSpeedRadS, kMaxWheelSpeedRadS);
   check(near(wheels[0].data.target_speed_set, forward_wheel_speed) &&
           near(wheels[1].data.target_speed_set, forward_wheel_speed) &&
           near(wheels[2].data.target_speed_set, -forward_wheel_speed) &&
           near(wheels[3].data.target_speed_set, -forward_wheel_speed),
         "real mecanum mapping retains current protection and installation directions");
+  check(near(forward_wheel_speed, 12.0f) && near(chassis_vx_set, 0.924f),
+        "automatic 12rad/s is not confused with 12m/s or the global wheel speed cap");
   check(near(chassis_power_limit_w, 80.0f), "automatic mode retains the 80W power limit");
   remote_input.sw_r = REMOTE_SWITCH_UP;
   remote_input.ch_lv = 0.8f;
@@ -148,7 +150,7 @@ int main()
   remote_input.ch_lu = 1.0f;
   tick(start + mission_config::kDriveDurationMs - 1U);
   check(mission_status.state == mission::State::Running &&
-          near(chassis_vx_set, mission_config::kForwardSpeedMps) &&
+          near(chassis_vx_set, mission_config::kForwardWheelSpeedRadS * kWheelRadiusM) &&
           chassis_vy_set == 0.0f && chassis_wz_set == 0.0f, "auto ignores valid manual motion inputs");
   measured_speed[0] = measured_speed[1] = 1.0f;
   measured_speed[2] = measured_speed[3] = -1.0f;

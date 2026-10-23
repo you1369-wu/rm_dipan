@@ -21,7 +21,7 @@ struct Input
 struct Command
 {
   bool enabled = false;  // false 走公共零力矩失能；Finished 则主动控制零速度。
-  float vx = 0.0f;       // 车体前进速度目标，m/s；本任务不要求横移或旋转。
+  float forward_wheel_speed_rad_s = 0.0f;  // 纯前进轮轴角速度幅值，rad/s。
 };
 
 struct Status

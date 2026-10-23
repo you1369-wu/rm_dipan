@@ -63,7 +63,8 @@ Command Controller::update(const Input & input)
   }
   Command command{};
   command.enabled = true;
-  command.vx = status_.state == State::Running ? mission_config::kForwardSpeedMps : 0.0f;
+  command.forward_wheel_speed_rad_s = status_.state == State::Running
+    ? mission_config::kForwardWheelSpeedRadS : 0.0f;
   return command;
 }
 }  // namespace mission

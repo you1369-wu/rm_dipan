@@ -22,8 +22,9 @@ void arm(mission::Controller & controller, mission::Input & input)
 int main()
 {
   using namespace mission;
-  check(mission_config::kForwardSpeedMps == 2.0f && mission_config::kDriveDurationMs == 4000U,
-        "automatic defaults request 2m/s for 4 seconds");
+  check(mission_config::kForwardWheelSpeedRadS == 12.0f &&
+          mission_config::kDriveDurationMs == 4000U,
+        "automatic defaults request wheel-shaft 12rad/s for 4 seconds");
   Controller controller;
   Input input{};
   input.selected = input.remote_online = input.input_valid = input.motors_ready = true;
@@ -35,24 +36,28 @@ int main()
         "missing feedback waits without starting the timer");
   input.now_ms = 5000U;
   input.motors_ready = true;
-  check(controller.update(input).vx == mission_config::kForwardSpeedMps &&
+  check(controller.update(input).forward_wheel_speed_rad_s == mission_config::kForwardWheelSpeedRadS &&
           controller.status().started_ms == 5000U, "ready feedback starts forward motion");
   input.now_ms += mission_config::kDriveDurationMs - 1U;
-  check(controller.update(input).vx > 0.0f && controller.status().state == State::Running,
+  check(controller.update(input).forward_wheel_speed_rad_s > 0.0f &&
+          controller.status().state == State::Running,
         "3999 ms remains in forward phase");
   ++input.now_ms;
   auto command = controller.update(input);
-  check(command.enabled && command.vx == 0.0f && controller.status().state == State::Finished &&
+  check(command.enabled && command.forward_wheel_speed_rad_s == 0.0f &&
+          controller.status().state == State::Finished &&
           controller.status().elapsed_ms == mission_config::kDriveDurationMs,
         "4000 ms commands an active zero-speed stop");
   input.now_ms += 10000U;
-  check(controller.update(input).vx == 0.0f && controller.status().state == State::Finished,
+  check(controller.update(input).forward_wheel_speed_rad_s == 0.0f &&
+          controller.status().state == State::Finished,
         "held automatic switch never repeats the run");
   input.selected = false;
   check(!controller.update(input).enabled && controller.status().state == State::Disabled,
         "manual selection releases automatic control");
   input.selected = true;
-  check(controller.update(input).vx > 0.0f && controller.status().elapsed_ms == 0U,
+  check(controller.update(input).forward_wheel_speed_rad_s > 0.0f &&
+          controller.status().elapsed_ms == 0U,
         "normal reentry starts a fresh timed run");
   input.remote_online = false;
   check(!controller.update(input).enabled && controller.status().fault == Fault::RemoteLost,
@@ -85,9 +90,11 @@ int main()
   arm(controller, input);
   controller.update(input);
   input.now_ms = mission_config::kDriveDurationMs - 1001U;
-  check(controller.update(input).vx > 0.0f, "timer wrap preserves the pre-deadline boundary");
+  check(controller.update(input).forward_wheel_speed_rad_s > 0.0f,
+        "timer wrap preserves the pre-deadline boundary");
   ++input.now_ms;
-  check(controller.update(input).vx == 0.0f && controller.status().state == State::Finished,
+  check(controller.update(input).forward_wheel_speed_rad_s == 0.0f &&
+          controller.status().state == State::Finished,
         "timer wrap preserves the 4000 ms stop boundary");
   input.motors_ready = input.input_valid = false;
   input.gap_ms = 100U;

@@ -56,7 +56,8 @@ constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(1);  // 控制周期 1 ms
 static_assert(configTICK_RATE_HZ == 1000, "This controller requires 1 kHz RTOS tick");
 
 // 轮半径、前后半间距、左右半间距；右侧轮的转向按当前安装方向取反。
-sp::Mecanum chassis(0.077f, 0.165f, 0.185f, false, false, true, true);
+constexpr float kWheelRadiusM = 0.077f;
+sp::Mecanum chassis(kWheelRadiusM, 0.165f, 0.185f, false, false, true, true);
 
 //                           dt      kp     ki    kd    mo     mio    alpha  ang?   dynamic?
 //需要对mo，mio进行限幅
@@ -289,8 +290,8 @@ static void run_control_cycle(uint32_t now_ms, uint32_t elapsed_ms)
     // }
     // can1.send(motor_lf.tx_id);
     if (automatic_selected) {
-      // 直接给定自动车体目标；仍复用下面的轮速限幅、PID 和 80 W 功率限制。
-      chassis_vx_set = command.vx;
+      // 轮轴 rad/s 先按同一轮半径换为 m/s，保留麦轮安装方向、轮速限幅和功率保护。
+      chassis_vx_set = command.forward_wheel_speed_rad_s * kWheelRadiusM;
       chassis_vy_set = chassis_wz_set = 0.0f;
     }
     else {
