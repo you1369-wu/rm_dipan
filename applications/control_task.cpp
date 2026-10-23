@@ -46,11 +46,11 @@ constexpr float kMaxVy = 4.0f;               // 左右最大目标速度为 3.5 
 constexpr float kStickDeadband = 0.05f;      // 摇杆死区
 constexpr float kDialDeadband = 0.10f;       // 拨轮死区
 constexpr float kSpinWz = 1.0f;              // 小陀螺目标角速度大小，rad/s；旋转方向由拨轮决定
-constexpr float kMaxWheelSpeedRadS = 12.0f;  // 每个轮子目标角速度上限，rad/s
+constexpr float kMaxWheelSpeedRadS = 24.0f;  // 每个轮子目标角速度上限，rad/s
 constexpr float kAcceleration = 0.5f;        // 平移目标加速度 m/s^2
 // 功率模型经验初值，需根据功率计实测数据重新标定。
 constexpr float kPowerK1 = 2.6f;
-constexpr float kPowerK2 = 0.015f;
+constexpr float kPowerK2 = 0.006f;
 constexpr float kPowerK3 = 4.0f;
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(1);  // 控制周期 1 ms
 static_assert(configTICK_RATE_HZ == 1000, "This controller requires 1 kHz RTOS tick");
@@ -77,8 +77,8 @@ bool valid_remote_input(const RemoteTaskData & remote)
     (remote.sw_l == REMOTE_SWITCH_DOWN || remote.sw_l == REMOTE_SWITCH_MID ||
      remote.sw_l == REMOTE_SWITCH_UP);
   return switches_valid && std::isfinite(remote.ch_lv) && std::isfinite(remote.ch_lh) &&
-    std::isfinite(remote.ch_lu) && std::fabs(remote.ch_lv) <= 1.0f &&
-    std::fabs(remote.ch_lh) <= 1.0f && std::fabs(remote.ch_lu) <= 1.0f;
+         std::isfinite(remote.ch_lu) && std::fabs(remote.ch_lv) <= 1.0f &&
+         std::fabs(remote.ch_lh) <= 1.0f && std::fabs(remote.ch_lu) <= 1.0f;
 }
 
 // 无输入；清除车体目标和四轮积分，不发送 CAN，供切换、停车和失能共用。
@@ -187,10 +187,11 @@ bool run_wheel_speed_control(const float target_rad_s[4])
   const uint32_t send_ms = osKernelSysTick();
   const bool latest_online = remote_task_get_data(&latest) && latest.is_alive;
   const bool latest_automatic = latest.sw_l == REMOTE_SWITCH_DOWN;
-  const bool right_enabled = latest.sw_r == REMOTE_SWITCH_MID ||
+  const bool right_enabled =
+    latest.sw_r == REMOTE_SWITCH_MID ||
     (control_source == ControlSource::AUTOMATIC && latest.sw_r == REMOTE_SWITCH_UP);
   bool command_allowed = latest_online && valid_remote_input(latest) && right_enabled &&
-    latest_automatic == (control_source == ControlSource::AUTOMATIC);
+                         latest_automatic == (control_source == ControlSource::AUTOMATIC);
   for (auto & wheel : wheels) {
     if (!wheel.motor->is_alive(send_ms) || !std::isfinite(wheel.motor->speed)) {
       command_allowed = false;
