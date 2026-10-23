@@ -36,13 +36,13 @@ volatile float chassis_power_scale = 1.0f;
 
 namespace
 {
-constexpr float kMaxVx = 5.0f;               // 前后最大目标速度为 3.5 m/s
-constexpr float kMaxVy = 5.0f;               // 左右最大目标速度为 3.5 m/s
-constexpr float kStickDeadband = 0.05f;      // 摇杆死区
-constexpr float kDialDeadband = 0.10f;       // 拨轮死区
-constexpr float kSpinWz = 15.0f;             // 小陀螺目标角速度大小，rad/s；旋转方向由拨轮决定
-constexpr float kMaxWheelSpeedRadS = 12.0f;  // 每个轮子目标角速度上限，rad/s
-constexpr float kAcceleration = 0.5f;        // 平移目标加速度 m/s^2
+constexpr float kMaxVx = 5.0f;              // 前后最大目标速度为 3.5 m/s
+constexpr float kMaxVy = 5.0f;              // 左右最大目标速度为 3.5 m/s
+constexpr float kStickDeadband = 0.05f;     // 摇杆死区
+constexpr float kDialDeadband = 0.10f;      // 拨轮死区
+constexpr float kSpinWz = 15.0f;            // 小陀螺目标角速度大小，rad/s；旋转方向由拨轮决定
+constexpr float kMaxWheelSpeedRadS = 1.0f;  // 每个轮子目标角速度上限，rad/s
+constexpr float kAcceleration = 0.5f;       // 平移目标加速度 m/s^2
 // 功率模型经验初值，需根据功率计实测数据重新标定。
 constexpr float kPowerK1 = 2.6f;
 constexpr float kPowerK2 = 0.015f;
