@@ -54,6 +54,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     applications/usart_callbacks.cpp
     applications/can_task.cpp
     applications/control_task.cpp
+    applications/mission/mission.cpp
     applications/tools/plot_task.cpp
     applications/pid_train.cpp
     applications/led_task.cpp
